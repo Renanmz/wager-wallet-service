@@ -17,6 +17,7 @@ import { WalletApplicationService } from '../application/services/wallet-applica
 import { ApplicationError } from '../application/errors.ts';
 import { CreateWalletDto } from './request.dto.ts';
 
+
 @Controller('wallets')
 export class WalletController {
   constructor(private readonly wallets: WalletApplicationService) {}
