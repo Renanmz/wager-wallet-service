@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: wager_wallet
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d wager_wallet']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - '4566:4566'
+    healthcheck:
+      test: ['CMD', 'bash', '-c', 'curl -fsS http://localhost:4566/_localstack/health']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  queue-init:
+    build: .
+    command: ['bun', 'run', 'scripts/init-queues.ts']
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      SQS_ENDPOINT: http://localstack:4566
+    restart: 'no'
+
+  migrate:
+    build: .
+    command: ['bun', 'run', 'scripts/migrate-up.ts']
+    environment: &service-env
+      NODE_ENV: development
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: wager_wallet
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      SQS_ENDPOINT: http://localstack:4566
+      WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      WAGER_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+      OUTBOX_QUEUE_URL: http://localstack:4566/000000000000/integration-events.fifo
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    build: .
+    command: ['bun', 'src/main.ts']
+    environment:
+      <<: *service-env
+      PORT: 3000
+      ENABLE_OUTBOX_PUBLISHER: 'true'
+      ENABLE_REFERENCE_RETRY: 'true'
+      ENABLE_WAGER_CONSUMER: 'false'
+    ports:
+      - '3000:3000'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      queue-init:
+        condition: service_completed_successfully
+
+  worker:
+    build: .
+    command: ['bun', 'src/main.ts']
+    environment:
+      <<: *service-env
+      PORT: 3000
+      ENABLE_OUTBOX_PUBLISHER: 'true'
+      ENABLE_REFERENCE_RETRY: 'true'
+      ENABLE_WAGER_CONSUMER: 'true'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      queue-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
